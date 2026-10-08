@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Auth0 Playground</title>
+  <style>
+    :root {
+      --bg: #0f172a; --card: #1e293b; --text: #e2e8f0; --muted: #94a3b8;
+      --accent: #eb5424; --border: #334155; --ok: #22c55e;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; }
+    header { padding: 20px 16px; border-bottom: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+    h1 { margin: 0; font-size: 1.3rem; }
+    main { max-width: 900px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+    .card h2 { margin: 0 0 8px; font-size: 1.05rem; }
+    .hint { color: var(--muted); font-size: 0.85rem; margin: 0 0 10px; }
+    button { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 10px 18px; font-size: 0.95rem; cursor: pointer; }
+    button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    pre { background: #0b1220; border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 0.8rem; margin: 0; white-space: pre-wrap; word-break: break-all; }
+    .profile { display: flex; gap: 14px; align-items: center; }
+    .profile img { width: 56px; height: 56px; border-radius: 50%; border: 1px solid var(--border); }
+    .status { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 0.8rem; border: 1px solid var(--border); color: var(--muted); }
+    .status.in { color: var(--ok); border-color: var(--ok); }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .err { color: #f87171; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Auth0 Playground</h1>
+    <div class="row">
+      <span id="status" class="status">Logged out</span>
+      <button id="login">Log in</button>
+      <button id="logout" class="secondary" disabled>Log out</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="error" class="card err" hidden></div>
+
+    <section class="card">
+      <h2>Profile</h2>
+      <p class="hint">Basic user info taken from the ID token claims.</p>
+      <div id="profile">Log in to see your profile.</div>
+    </section>
+
+    <section class="card">
+      <h2>ID token (decoded)</h2>
+      <p class="hint">Proves who the user is. Always a JWT. Look at iss, aud, sub, iat, exp.</p>
+      <pre id="idtoken">Not logged in.</pre>
+    </section>
+
+    <section class="card">
+      <h2>Access token</h2>
+      <p class="hint">Used to call APIs. It is only a JWT if you set an API audience below; otherwise it is an opaque token that only works for the /userinfo endpoint.</p>
+      <div class="row" style="margin-bottom:10px">
+        <button id="getAccess" class="secondary" disabled>Get access token</button>
+      </div>
+      <pre id="accesstoken">Not requested yet.</pre>
+    </section>
+
+    <section class="card">
+      <h2>Token expiry</h2>
+      <p class="hint">Time left on the ID token.</p>
+      <pre id="expiry">Not logged in.</pre>
+    </section>
+  </main>
+
+  <script src="https://cdn.auth0.com/js/auth0-spa-js/2.1/auth0-spa-js.production.js"></script>
+  <script>
+    // ---- Configuration ----
+    const AUTH0_DOMAIN = "dev-absolute-lab1.au.auth0.com";
+    const AUTH0_CLIENT_ID = "bQ5SthdP9THkQTDC76XnS0d8UaVNaxRk";
+    // Optional: put an API Identifier (audience) here once you create an API in Auth0.
+    // Leave empty to get an opaque access token.
+    const AUTH0_AUDIENCE = "";
+    // Optional: extra scopes for your API, e.g. "read:messages"
+    const EXTRA_SCOPE = "";
+    // ------------------------
+
+    // Works locally and on GitHub Pages project sites (keeps the /repo-name path).
+    const REDIRECT_URI = window.location.origin + window.location.pathname;
+
+    const $ = (id) => document.getElementById(id);
+    let auth0Client;
+    let expiryTimer;
+
+    function decodeJwt(token) {
+      try {
+        const [h, p] = token.split(".");
+        const dec = (s) => JSON.parse(decodeURIComponent(escape(atob(s.replace(/-/g, "+").replace(/_/g, "/")))));
+        return { header: dec(h), payload: dec(p) };
+      } catch (e) { return null; }
+    }
+
+    function showError(msg) {
+      const el = $("error");
+      el.textContent = msg;
+      el.hidden = false;
+    }
+
+    async function init() {
+      auth0Client = await auth0.createAuth0Client({
+        domain: AUTH0_DOMAIN,
+        clientId: AUTH0_CLIENT_ID,
+        authorizationParams: {
+          redirect_uri: REDIRECT_URI,
+          ...(AUTH0_AUDIENCE ? { audience: AUTH0_AUDIENCE } : {}),
+          ...(EXTRA_SCOPE ? { scope: "openid profile email " + EXTRA_SCOPE } : {})
+        },
+        cacheLocation: "memory"
+      });
+
+      const params = new URLSearchParams(window.location.search);
+      if (params.has("error")) {
+        showError(params.get("error") + ": " + (params.get("error_description") || ""));
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (params.has("code") && params.has("state")) {
+        try {
+          await auth0Client.handleRedirectCallback();
+        } catch (e) { showError("Callback error: " + e.message); }
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+
+      await render();
+    }
+
+    async function render() {
+      const authed = await auth0Client.isAuthenticated();
+      $("login").disabled = authed;
+      $("logout").disabled = !authed;
+      $("getAccess").disabled = !authed;
+      $("status").textContent = authed ? "Logged in" : "Logged out";
+      $("status").className = "status" + (authed ? " in" : "");
+      clearInterval(expiryTimer);
+
+      if (!authed) {
+        $("profile").textContent = "Log in to see your profile.";
+        $("idtoken").textContent = "Not logged in.";
+        $("accesstoken").textContent = "Not requested yet.";
+        $("expiry").textContent = "Not logged in.";
+        return;
+      }
+
+      const user = await auth0Client.getUser();
+      $("profile").innerHTML = "";
+      const wrap = document.createElement("div");
+      wrap.className = "profile";
+      if (user.picture) {
+        const img = document.createElement("img");
+        img.src = user.picture; img.alt = "Avatar";
+        wrap.appendChild(img);
+      }
+      const info = document.createElement("div");
+      info.textContent = (user.name || "(no name)") + "\n" + (user.email || "(no email)");
+      info.style.whiteSpace = "pre-line";
+      wrap.appendChild(info);
+      $("profile").appendChild(wrap);
+
+      const claims = await auth0Client.getIdTokenClaims();
+      const decoded = decodeJwt(claims.__raw);
+      $("idtoken").textContent = JSON.stringify(decoded, null, 2);
+
+      const tick = () => {
+        const left = claims.exp - Math.floor(Date.now() / 1000);
+        $("expiry").textContent = left > 0
+          ? "ID token expires in " + left + " seconds (" + new Date(claims.exp * 1000).toLocaleString() + ")"
+          : "ID token has expired.";
+      };
+      tick();
+      expiryTimer = setInterval(tick, 1000);
+    }
+
+    $("login").addEventListener("click", () => auth0Client.loginWithRedirect());
+
+    $("logout").addEventListener("click", () =>
+      auth0Client.logout({ logoutParams: { returnTo: REDIRECT_URI } })
+    );
+
+    $("getAccess").addEventListener("click", async () => {
+      try {
+        const token = await auth0Client.getTokenSilently();
+        const decoded = decodeJwt(token);
+        $("accesstoken").textContent = decoded
+          ? "JWT access token:\n" + JSON.stringify(decoded, null, 2)
+          : "Opaque access token (not a JWT). Set AUTH0_AUDIENCE to an API identifier to get a JWT.\n\n" + token;
+      } catch (e) {
+        $("accesstoken").textContent = "Error: " + e.message;
+      }
+    });
+
+    init().catch((e) => showError("Init error: " + e.message));
+  </script>
+</body>
+</html>
